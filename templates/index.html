@@ -1,0 +1,57 @@
+{{define "base"}}
+<!doctype html>
+<html>
+  <head>
+{{template "headtag" .}}
+  </head>
+  <body>
+    <h1 class="ui center aligned header">SQS</h1>
+    <h2 class="ui center aligned header">FIFO QUEUE</h2>
+    <div class="main ui container">
+      <div class="ui segment">
+        <div class="content">
+          <div class="ui form">
+            <div class="field">
+              <label>Approximate number of Messages: <span id="number"></span></label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="main ui container">
+      <form class="ui segment" method="POST">
+        <div class="content">
+          <div class="ui form">
+            <div class="field">
+              <label>Message</label>
+              <div class="ui input">
+                <input id="message" name="message" type="text">
+              </div>
+            </div>
+            <div class="field">
+              <div id="submit" class="ui green button submitbutton" onclick="SubmitForm('sendmessage');">Send</div>
+            </div>
+          </div>
+        </div>
+        <input id="action" type="hidden" name="action" value="sendmessage">
+      </form>
+    </div>
+    <div class="main ui container">
+      <form class="ui segment" method="POST">
+        <div class="content">
+          <div class="ui form">
+            <div class="field">
+              <div id="submit" class="ui green button submitbutton" onclick="SubmitForm('receivemessage');">Receive</div>
+            </div>
+          </div>
+        </div>
+        <input id="action" type="hidden" name="action" value="receivemessage">
+      </form>
+    </div>
+    <div id="warning" class="ui hidden warning message"></div>
+    <div id="info" class="ui hidden info message">
+      <p id="result"></p>
+    </div>
+  </body>
+</html>
+{{end}}
