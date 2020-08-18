@@ -39,7 +39,7 @@ var request = function(data, callback, onerror) {
     contentType:   'application/json',
     scriptCharset: 'utf-8',
     data:          JSON.stringify(data),
-    url:           {{ .Api }}
+    url:           App.url
   })
   .done(function(res) {
     callback(res);
@@ -48,3 +48,4 @@ var request = function(data, callback, onerror) {
     onerror(e);
   });
 };
+var App = { url: location.origin + {{ .ApiPath }} };

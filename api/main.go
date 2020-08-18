@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"fmt"
 	"log"
 	"sync"
@@ -22,8 +23,6 @@ type Response events.APIGatewayProxyResponse
 
 const layout         string = "2006-01-02 15:04"
 const layout2        string = "20060102150405.000"
-const messageGroupId string = "YourMessageGroupId"
-const queueUrl       string = "YourQueueUrl"
 
 func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (Response, error) {
 	var jsonBytes []byte
@@ -75,12 +74,12 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 func sendMessage(message string) error {
 	t := time.Now()
 	svc := sqs.New(session.New(), &aws.Config{
-		Region: aws.String("ap-northeast-1"),
+		Region: aws.String(os.Getenv("REGION")),
 	})
 	params := &sqs.SendMessageInput{
 		MessageBody:            aws.String(message),
-		QueueUrl:               aws.String(queueUrl),
-		MessageGroupId:         aws.String(messageGroupId),
+		QueueUrl:               aws.String(os.Getenv("QUEUE_URL")),
+		MessageGroupId:         aws.String(os.Getenv("MESSAGE_GROUP_ID")),
 		MessageDeduplicationId: aws.String(t.Format(layout2)),
 	}
 	_, err := svc.SendMessage(params)
@@ -93,11 +92,11 @@ func sendMessage(message string) error {
 
 func getCount()(string, error) {
 	svc := sqs.New(session.New(), &aws.Config{
-		Region: aws.String("ap-northeast-1"),
+		Region: aws.String(os.Getenv("REGION")),
 	})
 	params := &sqs.GetQueueAttributesInput{
 		AttributeNames: []*string{aws.String("ApproximateNumberOfMessages")},
-		QueueUrl: aws.String(queueUrl),
+		QueueUrl: aws.String(os.Getenv("QUEUE_URL")),
 	}
 	res, err := svc.GetQueueAttributes(params)
 	if err != nil {
@@ -108,7 +107,7 @@ func getCount()(string, error) {
 
 func deleteMessage(svc *sqs.SQS, msg *sqs.Message) error {
 	params := &sqs.DeleteMessageInput{
-		QueueUrl:      aws.String(queueUrl),
+		QueueUrl:      aws.String(os.Getenv("QUEUE_URL")),
 		ReceiptHandle: aws.String(*msg.ReceiptHandle),
 	}
 	_, err := svc.DeleteMessage(params)
@@ -121,10 +120,10 @@ func deleteMessage(svc *sqs.SQS, msg *sqs.Message) error {
 
 func receiveMessage()(string, error) {
 	svc := sqs.New(session.New(), &aws.Config{
-		Region: aws.String("ap-northeast-1"),
+		Region: aws.String(os.Getenv("REGION")),
 	})
 	params := &sqs.ReceiveMessageInput{
-		QueueUrl: aws.String(queueUrl),
+		QueueUrl: aws.String(os.Getenv("QUEUE_URL")),
 		MaxNumberOfMessages: aws.Int64(1),
 		WaitTimeSeconds: aws.Int64(3),
 	}
