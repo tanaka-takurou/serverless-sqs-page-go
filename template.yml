@@ -1,0 +1,80 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Serverless SQS Page
+
+Parameters:
+  ApplicationName:
+    Type: String
+    Default: 'ServerlessSQSPage'
+  QueueMessageGroupId:
+    Type: String
+    Default: 'TestMessageGroup'
+  FrontPageApiStageName:
+    Type: String
+    Default: 'ProdStage'
+
+Resources:
+  FrontPageApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: ServerlessSQSPageApi
+      EndpointConfiguration: REGIONAL
+      StageName: !Ref FrontPageApiStageName
+  ServerlessSQSQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      FifoQueue: true
+  FrontPageFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ServerlessSQSPageFrontFunction
+      CodeUri: bin/
+      Handler: main
+      MemorySize: 256
+      Runtime: go1.x
+      Description: 'Test Front Function'
+      Policies:
+      Environment:
+        Variables:
+          REGION: !Ref 'AWS::Region'
+          API_PATH: !Join [ '', [ '/', !Ref FrontPageApiStageName, '/api'] ]
+      Events:
+        FrontPageApi:
+          Type: Api
+          Properties:
+            Path: '/'
+            Method: get
+            RestApiId: !Ref FrontPageApi
+  MainFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: ServerlessSQSPageApiFunction
+      CodeUri: api/bin/
+      Handler: main
+      MemorySize: 256
+      Runtime: go1.x
+      Description: 'Test SQS Function'
+      Policies:
+      - SQSPollerPolicy:
+          QueueName:
+            !GetAtt ServerlessSQSQueue.QueueName
+      - SQSSendMessagePolicy:
+          QueueName:
+            !GetAtt ServerlessSQSQueue.QueueName
+      Environment:
+        Variables:
+          REGION: !Ref 'AWS::Region'
+          QUEUE_URL: !Ref ServerlessSQSQueue
+          MESSAGE_GROUP_ID: !Ref 'QueueMessageGroupId'
+      Events:
+        FrontPageApi:
+          Type: Api
+          Properties:
+            Path: '/api'
+            Method: post
+            RestApiId: !Ref FrontPageApi
+
+Outputs:
+  APIURI:
+    Description: "URI"
+    Value: !Join [ '', [ 'https://', !Ref FrontPageApi, '.execute-api.',!Ref 'AWS::Region','.amazonaws.com/',!Ref FrontPageApiStageName,'/'] ]
