@@ -8,11 +8,12 @@ import (
 	"time"
 	"context"
 	"encoding/json"
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/sqs"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/service/sqs"
 )
 
 type APIResponse struct {
@@ -21,8 +22,11 @@ type APIResponse struct {
 
 type Response events.APIGatewayProxyResponse
 
-const layout         string = "2006-01-02 15:04"
-const layout2        string = "20060102150405.000"
+var cfg aws.Config
+var sqsClient *sqs.Client
+
+const layout  string = "2006-01-02 15:04"
+const layout2 string = "20060102150405.000"
 
 func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (Response, error) {
 	var jsonBytes []byte
@@ -33,7 +37,7 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 		switch v {
 		case "sendmessage" :
 			if m, ok := d["message"]; ok {
-				e := sendMessage(m)
+				e := sendMessage(ctx, m)
 				if e != nil {
 					err = e
 				} else {
@@ -41,14 +45,14 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 				}
 			}
 		case "getcount" :
-			message, e := getCount()
+			message, e := getCount(ctx)
 			if e != nil {
 				err = e
 			} else {
 				jsonBytes, _ = json.Marshal(APIResponse{Message: message})
 			}
 		case "receivemessage" :
-			message, e := receiveMessage()
+			message, e := receiveMessage(ctx)
 			if e != nil {
 				err = e
 			} else {
@@ -71,18 +75,19 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 	}, nil
 }
 
-func sendMessage(message string) error {
+func sendMessage(ctx context.Context, message string) error {
 	t := time.Now()
-	svc := sqs.New(session.New(), &aws.Config{
-		Region: aws.String(os.Getenv("REGION")),
-	})
+	if sqsClient == nil {
+		sqsClient = sqs.New(cfg)
+	}
 	params := &sqs.SendMessageInput{
 		MessageBody:            aws.String(message),
 		QueueUrl:               aws.String(os.Getenv("QUEUE_URL")),
 		MessageGroupId:         aws.String(os.Getenv("MESSAGE_GROUP_ID")),
 		MessageDeduplicationId: aws.String(t.Format(layout2)),
 	}
-	_, err := svc.SendMessage(params)
+	req := sqsClient.SendMessageRequest(params)
+	_, err := req.Send(ctx)
 	if err != nil {
 		log.Print(err)
 		return err
@@ -90,27 +95,32 @@ func sendMessage(message string) error {
 	return nil
 }
 
-func getCount()(string, error) {
-	svc := sqs.New(session.New(), &aws.Config{
-		Region: aws.String(os.Getenv("REGION")),
-	})
+func getCount(ctx context.Context)(string, error) {
+	if sqsClient == nil {
+		sqsClient = sqs.New(cfg)
+	}
 	params := &sqs.GetQueueAttributesInput{
-		AttributeNames: []*string{aws.String("ApproximateNumberOfMessages")},
+		AttributeNames: []sqs.QueueAttributeName{sqs.QueueAttributeNameApproximateNumberOfMessages},
 		QueueUrl: aws.String(os.Getenv("QUEUE_URL")),
 	}
-	res, err := svc.GetQueueAttributes(params)
+	req := sqsClient.GetQueueAttributesRequest(params)
+	res, err := req.Send(ctx)
 	if err != nil {
 		return "", err
 	}
-	return aws.StringValue(res.Attributes["ApproximateNumberOfMessages"]), nil
+	return res.GetQueueAttributesOutput.Attributes[string(sqs.QueueAttributeNameApproximateNumberOfMessages)], nil
 }
 
-func deleteMessage(svc *sqs.SQS, msg *sqs.Message) error {
+func deleteMessage(ctx context.Context, msg sqs.Message) error {
+	if sqsClient == nil {
+		sqsClient = sqs.New(cfg)
+	}
 	params := &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(os.Getenv("QUEUE_URL")),
-		ReceiptHandle: aws.String(*msg.ReceiptHandle),
+		ReceiptHandle: msg.ReceiptHandle,
 	}
-	_, err := svc.DeleteMessage(params)
+	req := sqsClient.DeleteMessageRequest(params)
+	_, err := req.Send(ctx)
 
 	if err != nil {
 		return err
@@ -118,34 +128,44 @@ func deleteMessage(svc *sqs.SQS, msg *sqs.Message) error {
 	return nil
 }
 
-func receiveMessage()(string, error) {
-	svc := sqs.New(session.New(), &aws.Config{
-		Region: aws.String(os.Getenv("REGION")),
-	})
+func receiveMessage(ctx context.Context)(string, error) {
+	if sqsClient == nil {
+		sqsClient = sqs.New(cfg)
+	}
 	params := &sqs.ReceiveMessageInput{
 		QueueUrl: aws.String(os.Getenv("QUEUE_URL")),
 		MaxNumberOfMessages: aws.Int64(1),
 		WaitTimeSeconds: aws.Int64(3),
 	}
-	res, err := svc.ReceiveMessage(params)
+	req := sqsClient.ReceiveMessageRequest(params)
+	res, err := req.Send(ctx)
 	if err != nil {
 		return "", err
 	}
-	if len(res.Messages) == 0 {
+	if len(res.ReceiveMessageOutput.Messages) == 0 {
 		return "Empty.", nil
 	}
 	var wg sync.WaitGroup
-	for _, m := range res.Messages {
+	for _, m := range res.ReceiveMessageOutput.Messages {
 		wg.Add(1)
-		go func(msg *sqs.Message) {
+		go func(msg sqs.Message) {
 			defer wg.Done()
-			if err := deleteMessage(svc, msg); err != nil {
+			if err := deleteMessage(ctx, msg); err != nil {
 				log.Println(err)
 			}
 		}(m)
 	}
 	wg.Wait()
-	return aws.StringValue(res.Messages[0].Body), nil
+	return aws.StringValue(res.ReceiveMessageOutput.Messages[0].Body), nil
+}
+
+func init() {
+	var err error
+	cfg, err = external.LoadDefaultAWSConfig()
+	cfg.Region = os.Getenv("REGION")
+	if err != nil {
+		log.Print(err)
+	}
 }
 
 func main() {
