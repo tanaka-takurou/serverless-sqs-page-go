@@ -6,14 +6,18 @@ import (
 	"log"
 	"sync"
 	"time"
+	"bytes"
 	"context"
+	"reflect"
+	"strings"
 	"encoding/json"
 	"github.com/aws/aws-lambda-go/events"
 	"github.com/aws/aws-lambda-go/lambda"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 type APIResponse struct {
@@ -78,7 +82,7 @@ func HandleRequest(ctx context.Context, request events.APIGatewayProxyRequest) (
 func sendMessage(ctx context.Context, message string) error {
 	t := time.Now()
 	if sqsClient == nil {
-		sqsClient = sqs.New(cfg)
+		sqsClient = getSqsClient()
 	}
 	params := &sqs.SendMessageInput{
 		MessageBody:            aws.String(message),
@@ -86,8 +90,7 @@ func sendMessage(ctx context.Context, message string) error {
 		MessageGroupId:         aws.String(os.Getenv("MESSAGE_GROUP_ID")),
 		MessageDeduplicationId: aws.String(t.Format(layout2)),
 	}
-	req := sqsClient.SendMessageRequest(params)
-	_, err := req.Send(ctx)
+	_, err := sqsClient.SendMessage(ctx, params)
 	if err != nil {
 		log.Print(err)
 		return err
@@ -97,30 +100,29 @@ func sendMessage(ctx context.Context, message string) error {
 
 func getCount(ctx context.Context)(string, error) {
 	if sqsClient == nil {
-		sqsClient = sqs.New(cfg)
+		sqsClient = getSqsClient()
 	}
 	params := &sqs.GetQueueAttributesInput{
-		AttributeNames: []sqs.QueueAttributeName{sqs.QueueAttributeNameApproximateNumberOfMessages},
+		AttributeNames: []types.QueueAttributeName{types.QueueAttributeNameApproximatenumberofmessages},
 		QueueUrl: aws.String(os.Getenv("QUEUE_URL")),
 	}
-	req := sqsClient.GetQueueAttributesRequest(params)
-	res, err := req.Send(ctx)
+	res, err := sqsClient.GetQueueAttributes(ctx, params)
 	if err != nil {
 		return "", err
 	}
-	return res.GetQueueAttributesOutput.Attributes[string(sqs.QueueAttributeNameApproximateNumberOfMessages)], nil
+	attributeName := string(types.QueueAttributeNameApproximatenumberofmessages)
+	return stringValue(res.Attributes[attributeName]), nil
 }
 
-func deleteMessage(ctx context.Context, msg sqs.Message) error {
+func deleteMessage(ctx context.Context, msg types.Message) error {
 	if sqsClient == nil {
-		sqsClient = sqs.New(cfg)
+		sqsClient = getSqsClient()
 	}
 	params := &sqs.DeleteMessageInput{
 		QueueUrl:      aws.String(os.Getenv("QUEUE_URL")),
 		ReceiptHandle: msg.ReceiptHandle,
 	}
-	req := sqsClient.DeleteMessageRequest(params)
-	_, err := req.Send(ctx)
+	_, err := sqsClient.DeleteMessage(ctx, params)
 
 	if err != nil {
 		return err
@@ -130,41 +132,115 @@ func deleteMessage(ctx context.Context, msg sqs.Message) error {
 
 func receiveMessage(ctx context.Context)(string, error) {
 	if sqsClient == nil {
-		sqsClient = sqs.New(cfg)
+		sqsClient = getSqsClient()
 	}
 	params := &sqs.ReceiveMessageInput{
 		QueueUrl: aws.String(os.Getenv("QUEUE_URL")),
-		MaxNumberOfMessages: aws.Int64(1),
-		WaitTimeSeconds: aws.Int64(3),
+		MaxNumberOfMessages: aws.Int32(1),
+		WaitTimeSeconds: aws.Int32(3),
 	}
-	req := sqsClient.ReceiveMessageRequest(params)
-	res, err := req.Send(ctx)
+	res, err := sqsClient.ReceiveMessage(ctx, params)
 	if err != nil {
 		return "", err
 	}
-	if len(res.ReceiveMessageOutput.Messages) == 0 {
+	if len(res.Messages) == 0 {
 		return "Empty.", nil
 	}
 	var wg sync.WaitGroup
-	for _, m := range res.ReceiveMessageOutput.Messages {
+	for _, m := range res.Messages {
 		wg.Add(1)
-		go func(msg sqs.Message) {
+		go func(msg types.Message) {
 			defer wg.Done()
 			if err := deleteMessage(ctx, msg); err != nil {
 				log.Println(err)
 			}
-		}(m)
+		}(*m)
 	}
 	wg.Wait()
-	return aws.StringValue(res.ReceiveMessageOutput.Messages[0].Body), nil
+	return stringValue(res.Messages[0].Body), nil
 }
 
-func init() {
+func getSqsClient() *sqs.Client {
+	if cfg.Region != os.Getenv("REGION") {
+		cfg = getConfig()
+	}
+	return sqs.NewFromConfig(cfg)
+}
+
+func getConfig() aws.Config {
 	var err error
-	cfg, err = external.LoadDefaultAWSConfig()
-	cfg.Region = os.Getenv("REGION")
+	newConfig, err := config.LoadDefaultConfig()
+	newConfig.Region = os.Getenv("REGION")
 	if err != nil {
 		log.Print(err)
+	}
+	return newConfig
+}
+
+func stringValue(i interface{}) string {
+	var buf bytes.Buffer
+	strVal(reflect.ValueOf(i), 0, &buf)
+	return buf.String()
+}
+
+func strVal(v reflect.Value, indent int, buf *bytes.Buffer) {
+	for v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	switch v.Kind() {
+	case reflect.Struct:
+		buf.WriteString("{\n")
+		for i := 0; i < v.Type().NumField(); i++ {
+			ft := v.Type().Field(i)
+			fv := v.Field(i)
+			if ft.Name[0:1] == strings.ToLower(ft.Name[0:1]) {
+				continue // ignore unexported fields
+			}
+			if (fv.Kind() == reflect.Ptr || fv.Kind() == reflect.Slice) && fv.IsNil() {
+				continue // ignore unset fields
+			}
+			buf.WriteString(strings.Repeat(" ", indent+2))
+			buf.WriteString(ft.Name + ": ")
+			if tag := ft.Tag.Get("sensitive"); tag == "true" {
+				buf.WriteString("<sensitive>")
+			} else {
+				strVal(fv, indent+2, buf)
+			}
+			buf.WriteString(",\n")
+		}
+		buf.WriteString("\n" + strings.Repeat(" ", indent) + "}")
+	case reflect.Slice:
+		nl, id, id2 := "", "", ""
+		if v.Len() > 3 {
+			nl, id, id2 = "\n", strings.Repeat(" ", indent), strings.Repeat(" ", indent+2)
+		}
+		buf.WriteString("[" + nl)
+		for i := 0; i < v.Len(); i++ {
+			buf.WriteString(id2)
+			strVal(v.Index(i), indent+2, buf)
+			if i < v.Len()-1 {
+				buf.WriteString("," + nl)
+			}
+		}
+		buf.WriteString(nl + id + "]")
+	case reflect.Map:
+		buf.WriteString("{\n")
+		for i, k := range v.MapKeys() {
+			buf.WriteString(strings.Repeat(" ", indent+2))
+			buf.WriteString(k.String() + ": ")
+			strVal(v.MapIndex(k), indent+2, buf)
+			if i < v.Len()-1 {
+				buf.WriteString(",\n")
+			}
+		}
+		buf.WriteString("\n" + strings.Repeat(" ", indent) + "}")
+	default:
+		format := "%v"
+		switch v.Interface().(type) {
+		case string:
+			format = "%q"
+		}
+		fmt.Fprintf(buf, format, v.Interface())
 	}
 }
 
