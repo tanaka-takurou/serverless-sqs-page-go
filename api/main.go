@@ -180,7 +180,8 @@ func getConfig() aws.Config {
 func stringValue(i interface{}) string {
 	var buf bytes.Buffer
 	strVal(reflect.ValueOf(i), 0, &buf)
-	return buf.String()
+	res := buf.String()
+	return res[1:len(res) - 1]
 }
 
 func strVal(v reflect.Value, indent int, buf *bytes.Buffer) {
